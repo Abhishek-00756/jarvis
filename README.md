@@ -13,7 +13,7 @@ machine unless you explicitly configure cloud fallback or web search.
 | 1 | Text ReAct agent on a local Ollama model | `agent/graph.py`, `agent/llm.py`, `agent/main.py` |
 | 2 | Wake word + speech-to-text + text-to-speech | `agent/voice/` |
 | 3 | macOS app/UI control + browser control | `agent/computer/` |
-| 4 | Semantic long-term memory + background daemon | `agent/memory.py`, `agent/daemon.py` |
+| 4 | Semantic long-term memory + background autonomy | `agent/memory.py`, `agent/daemon.py` |
 | 5 | Optional escalation to a cloud model (Claude API) | `agent/llm.py` (`get_cloud_llm`), `ask_cloud_model` tool |
 | — | Example MCP server (tool-sharing across clients) | `agent/mcp_servers/` |
 
@@ -132,7 +132,22 @@ jarvis-agent/
 │   │   ├── macos_control.py       # AppleScript/System Events app+UI control
 │   │   ├── whatsapp_control.py     # WhatsApp call automation (Accessibility API)
 │   │   ├── apple_apps.py           # Mail/Calendar/Reminders/Notes (AppleScript)
+│   │   ├── finder_control.py        # expanded file management (find/move/trash/compress)
+│   │   ├── media_control.py          # Music.app playback control
+│   │   ├── messaging.py               # unified send_message() over WhatsApp/iMessage
 │   │   └── browser_control.py       # Playwright browser control
+│   ├── context/
+│   │   ├── context.py               # get_current_context() — the top-level snapshot
+│   │   ├── browser_context.py        # reads YOUR real Safari/Chrome active tab
+│   │   └── clipboard.py               # pbcopy/pbpaste wrapper
+│   ├── security/
+│   │   ├── audit.py                   # structured action log
+│   │   └── secrets.py                  # Keychain-backed credential storage
+│   ├── system/
+│   │   └── system_control.py           # battery/volume/network/power actions
+│   ├── documents/
+│   │   └── extractor.py                # PDF/DOCX/PPTX/spreadsheet reading
+│   ├── tasks.py                          # simple persistent task manager
 │   ├── mcp_servers/
 │   │   └── filesystem_server.py  # example standalone MCP server
 │   └── webui/
@@ -215,76 +230,87 @@ The browser uses a **persistent profile** (`~/.jarvis_agent/browser_profile`),
 so once you log into a site (Instagram, etc.) in the window it opens, that
 login is remembered on later runs — you won't need to log in every time.
 
-For sites with unstable/obfuscated UI element names (Instagram is the
-main example — its nav uses auto-generated class names that change often
-specifically to resist automation), prefer `browser_go_to("instagram_reels")`
-over clicking through the nav with `browser_click`. It jumps straight to
-the known URL instead of trying to find and click a fragile element. Add
-more named shortcuts to `DIRECT_URLS` in `agent/computer/browser_control.py`
-as you need them.
+For sites with unreliable navigation, use the named `browser_go_to` shortcuts
+such as `instagram_reels`, `instagram_home`, or `instagram_dms`.
 
-One thing outside this project's control: some sites (Instagram included)
-run bot-detection and may occasionally show a login checkpoint or CAPTCHA
-to an automated browser even with valid cookies. If that happens, it needs
-a human to clear it once — there's no reliable way around that from code.
+## Context awareness
 
-## "Send this to X" — sharing what's on screen
+This version adds three capabilities that close a big chunk of the “what am I
+doing right now?” gap:
 
-Two sharing paths exist, and the agent picks based on how you phrase it:
+- `get_current_context()` — combines frontmost app + active browser tab +
+  clipboard into one snapshot.
+- `get_active_browser_tab()` — reads the **user's real Safari or Chrome**
+  frontmost tab via AppleScript, separate from Jarvis's controlled Playwright
+  browser.
+- `get_clipboard()` / `set_clipboard()` — lets Jarvis read or replace the system
+  clipboard through `pbpaste` / `pbcopy`.
 
-- **"Send this reel on Instagram"** → `share_reel_to_instagram_dm` — uses
-  Instagram's own Share button and DM search, entirely within Instagram.
-  This is Playwright-based (clicking real page elements by their
-  accessible name/role, not raw CSS classes), which is meaningfully more
-  stable than the WhatsApp Accessibility-API automation — but Instagram's
-  button labels can still shift over time. If it can't find something, run
-  `browser_inspect_page()` to see the current accessible names and update
-  `SHARE_BUTTON_NAMES` / `SEND_BUTTON_NAMES` in `browser_control.py`.
-- **"Send this reel on WhatsApp" / no platform specified** →
-  `browser_get_current_url` + `whatsapp_send_message` — copies the link
-  and sends it as a WhatsApp message instead.
+The screenshot/OCR layer is still intentionally left as a future addition;
+ScreenCaptureKit/Vision would require a native helper and separate Screen
+Recording permission on macOS.
 
-**The catch, either way**: it only knows "this reel" if you're browsing
-through *the agent's own controlled browser window* (the persistent
-Playwright profile), not your everyday Safari/Chrome. If you're scrolling
-reels in your normal browser, it has no visibility into that and will say
-so rather than guess.
+## System controls
 
-## WhatsApp calling — read this before relying on it
+New `agent/system/system_control.py` exposes battery, disk, network, volume,
+CPU, memory, uptime, timezone, brightness, and power actions. Power actions
+(lock/sleep/restart/shutdown) and volume/brightness changes are gated through
+the same confirmation policy.
 
-`whatsapp_call("contact name")` opens a chat via WhatsApp's search and
-tries to click the voice/video call button. **This is UI automation, not
-an official API** — WhatsApp Desktop has no AppleScript dictionary, so
-it works by driving the Accessibility tree through System Events, the
-same technique real Mac computer-use agents use. That means:
+## Finder / file management
 
-- It needs Accessibility permission granted to your terminal/VS Code.
-- The exact call-button label can differ by WhatsApp version/locale. It
-  tries a few common labels (`agent/computer/whatsapp_control.py`,
-  `CALL_BUTTON_CANDIDATES`); if none match, it says so explicitly rather
-  than pretending it worked.
-- **If it can't find the button on your install**: ask the agent to
-  "inspect the WhatsApp UI" (the `inspect_app_ui` tool), which dumps the
-  actual Accessibility element names. Find the real call button's label
-  in that output and add it to `CALL_BUTTON_CANDIDATES` /
-  `VIDEO_BUTTON_CANDIDATES` in `whatsapp_control.py`.
+`agent/computer/finder_control.py` adds safe-ish, purpose-specific tools over
+Finder and macOS file utilities: recursive file search, recent files,
+metadata, move/copy/rename, folder creation, trashing, revealing/opening,
+and archive compression/extraction. Destructive actions use the confirmation
+gate.
 
-This calibrate-once-then-it-works pattern is normal for Accessibility-API
-automation on apps without a real API — it's the same reason a website
-redesign can break a browser-automation script until you update a
-selector.
+## Documents
 
-## Extending further
+`agent/documents/extractor.py` can read PDF, DOCX, PPTX, XLSX/XLSM/ODS-ish
+(spreadsheet via `openpyxl`) content and search within PDFs. Results are
+truncated so large documents don't explode the context window.
 
-- **Split more tools into MCP servers**: copy `filesystem_server.py`'s
-  pattern for browser or macOS control, so other MCP clients (Claude Code,
-  Claude Desktop) can share the same tools.
-- **Swap the confirmation prompt**: replace the `input()` call in
-  `safety.py` with a native macOS notification/approval dialog for a more
-  Jarvis-like feel — keep the same function signature.
-- **Tighten the escalation trigger**: right now cloud fallback only kicks
-  in after `MAX_ITERATIONS` is hit. You could also add an explicit "ask the
-  cloud" voice command, which the `ask_cloud_model` tool already supports.
-- **Add more proactive daemon triggers**: calendar events (EventKit),
-  Mail (AppleScript), or a Screen Time-style usage nudge are natural next
-  additions in `agent/daemon.py`.
+## Tasks + audit log
+
+`agent/tasks.py` is a tiny persistent task store at `~/.jarvis_agent/tasks.json`
+with create/list/complete/delete. `agent/security/audit.py` records structured
+success/denial/failure information for tool actions, and `what_did_you_do_today`
+exposes a human-readable recent-actions summary to the agent.
+
+## Keychain-backed secrets
+
+`agent/security/secrets.py` uses macOS `security` CLI Keychain lookups when
+available, while keeping `.env` as the explicit development fallback. The
+code never stores the secret value in the audit log.
+
+## Cloud safety boundary
+
+The cloud fallback is now **off by default** (`JARVIS_CLOUD_AUTO_ESCALATE=false`)
+and the Claude model is bound only to `SAFE_CLOUD_TOOLS` — read-only/low-risk
+operations. It cannot run your shell, delete files, send messages, or invoke
+power actions. For sensitive tasks, prefer the fully local path. The default
+cloud model is `claude-sonnet-5`; set `JARVIS_CLOUD_FALLBACK_MODEL` in `.env` to
+change it.
+
+## Known gaps / next additions
+
+These are deliberate next steps rather than silently pretending they are done:
+
+- **Native screen capture + OCR** (ScreenCaptureKit + Vision helper).
+- **Global macOS hotkey** to invoke Jarvis without the terminal focused.
+- **Native menu-bar app / approval UI** instead of CLI `input()` confirmation.
+- **Event-driven automations** beyond the current morning schedule + file
+  watcher (battery low, email received, calendar soon, clipboard changed, etc.).
+- **Full Calendar/Reminder/Notes/Mail editing/search** beyond the current
+  useful read/create subset.
+- **Swift `SMAppService` / Login Item packaging** so Jarvis starts with macOS
+  rather than a terminal command.
+- **Streaming/cancellation in the web UI**.
+- **Model routing** (small fast local model vs bigger reasoning/vision model).
+- **Voice persistence + barge-in / VAD**.
+- **Prompt-injection hardening** for external web/document content.
+- **MCP v2 migration** when you deliberately upgrade the SDK.
+
+This repository is intended as a strong local-agent foundation rather than a
+finished Siri replacement. Build permissions and autonomy gradually.

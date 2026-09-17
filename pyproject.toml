@@ -1,0 +1,46 @@
+[project]
+name = "jarvis-agent"
+version = "0.1.0"
+description = "Local autonomous assistant for macOS (Apple Silicon)"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-ollama>=0.2.0",
+    "ollama>=0.3.0",
+    "pydantic>=2.7.0",
+    "python-dotenv>=1.0.0",
+    "openwakeword>=0.6.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.26.0",
+    "mlx-whisper>=0.4.0",
+    "kokoro-onnx>=0.4.0",
+    "playwright>=1.45.0",
+    "pyobjc-framework-Quartz>=10.1",
+    "chromadb>=0.5.0",
+    "watchdog>=4.0.0",
+    "apscheduler>=3.10.0",
+    "tavily-python>=0.5.0",
+    "anthropic>=0.34.0",
+    "langchain-anthropic>=0.2.0",
+    "mcp>=1.0.0,<2.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+# NOTE on dependency locking: this file declares version floors, not an
+# exact, reproducible resolution. For a real lockfile (recommended for a
+# project this dependency-heavy — LangGraph, Chroma, MLX, and voice
+# packages all move quickly), run:
+#     uv lock
+# with the `uv` tool installed, which will generate a uv.lock alongside
+# this file pinning exact resolved versions. That lockfile isn't included
+# here since it should be generated against your actual machine/Python
+# version, not shipped pre-baked.
