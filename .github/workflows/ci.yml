@@ -34,22 +34,23 @@ jobs:
           print(f"Syntax OK: {len(files)} Python files")
           PY
 
-      - name: Cross-check tool registry and categories
+      - name: Cross-check tool registry, compatibility shims, and categories
         run: |
           python3 - <<'PY'
           import ast
           import sys
 
-          def tool_functions(path):
-              tree = ast.parse(open(path).read())
+          def tool_functions(paths):
               names = set()
-              for node in ast.walk(tree):
-                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                      for dec in node.decorator_list:
-                          if isinstance(dec, ast.Name) and dec.id == "tool":
-                              names.add(node.name)
-                          elif isinstance(dec, ast.Attribute) and dec.attr == "tool":
-                              names.add(node.name)
+              for path in paths:
+                  tree = ast.parse(open(path).read())
+                  for node in ast.walk(tree):
+                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                          for dec in node.decorator_list:
+                              if isinstance(dec, ast.Name) and dec.id == "tool":
+                                  names.add(node.name)
+                              elif isinstance(dec, ast.Attribute) and dec.attr == "tool":
+                                  names.add(node.name)
               return names
 
           def list_names(path, assignment):
@@ -77,17 +78,28 @@ jobs:
                       return result
               return []
 
-          defined = tool_functions('agent/tools.py') | tool_functions('agent/extended_tools.py')
-          registry = list_names('agent/tools.py', 'ALL_TOOLS') + list_names('agent/extended_tools.py', 'EXTRA_TOOLS')
+          defined = tool_functions([
+              'agent/tools.py',
+              'agent/tools/__init__.py',
+              'agent/extended_tools.py',
+          ])
+          registry = (
+              list_names('agent/tools.py', 'ALL_TOOLS')
+              + list_names('agent/extended_tools.py', 'EXTRA_TOOLS')
+          )
           categorized = category_names('agent/tool_router.py')
           missing = sorted(set(categorized) - set(registry))
           undefined = sorted(set(registry) - defined)
-          duplicate_registry = sorted(name for name in set(registry) if registry.count(name) > 1)
-          duplicate_categories = sorted(name for name in set(categorized) if categorized.count(name) > 1)
+          duplicate_registry = sorted(
+              name for name in set(registry) if registry.count(name) > 1
+          )
+          duplicate_categories = sorted(
+              name for name in set(categorized) if categorized.count(name) > 1
+          )
           print(f"Registry: {len(registry)} unique={len(set(registry))}")
           print(f"Categories: {len(categorized)} unique={len(set(categorized))}")
           print(f"Category entries missing from registry: {missing}")
-          print(f"Registry entries without @tool definitions: {undefined}")
+          print(f"Registry entries without @tool definitions/shims: {undefined}")
           print(f"Duplicate registry entries: {duplicate_registry}")
           print(f"Duplicate category entries: {duplicate_categories}")
           if missing or undefined or duplicate_registry or duplicate_categories:
