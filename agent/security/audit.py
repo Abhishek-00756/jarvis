@@ -1,23 +1,43 @@
-"""Structured audit log for gated actions."""
-import json,os
-from datetime import datetime,timezone
+"""Small best-effort JSONL audit log for security-relevant actions."""
+
+import json
+import os
+import time
 from pathlib import Path
-from agent import config
-AUDIT_LOG_PATH=os.path.join(config.MEMORY_PATH,"audit.jsonl")
-def log_action(tool_name:str,description:str,approved:bool,result:str="")->None:
-    Path(config.MEMORY_PATH).mkdir(parents=True,exist_ok=True)
-    entry={"timestamp":datetime.now(timezone.utc).isoformat(),"tool":tool_name,"description":description,"approved":approved,"result":result[:500] if result else ""}
-    with open(AUDIT_LOG_PATH,"a") as f:f.write(json.dumps(entry)+"\n")
-def read_recent_actions(limit:int=20)->list[dict]:
-    if not os.path.exists(AUDIT_LOG_PATH):return []
-    with open(AUDIT_LOG_PATH) as f: lines=f.readlines()
-    return [json.loads(line) for line in lines[-limit:]]
-def search_actions(keyword:str,limit:int=20)->list[dict]:
-    if not os.path.exists(AUDIT_LOG_PATH):return []
-    with open(AUDIT_LOG_PATH) as f: lines=f.readlines()
-    matches=[]; key=keyword.lower()
-    for line in reversed(lines):
-        entry=json.loads(line)
-        if key in json.dumps(entry).lower():matches.append(entry)
-        if len(matches)>=limit:break
-    return matches
+
+LOG_PATH = Path(os.path.expanduser("~/.jarvis_agent/action_audit.jsonl"))
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def log_action(tool: str, description: str, approved: bool, result: str = "") -> None:
+    entry = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "tool": tool,
+        "description": description,
+        "approved": approved,
+        "result": result[:500],
+    }
+    try:
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as exc:
+        print(f"[audit] unable to write audit log: {exc}", file=__import__("sys").stderr)
+
+
+def read_recent_actions(limit: int = 20) -> list[dict]:
+    try:
+        lines = LOG_PATH.read_text(encoding="utf-8").splitlines()[-max(1, limit):]
+    except (OSError, ValueError):
+        return []
+    out = []
+    for line in lines:
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def search_actions(query: str, limit: int = 50) -> list[dict]:
+    q = query.lower()
+    return [e for e in read_recent_actions(500) if q in json.dumps(e).lower()][:limit]

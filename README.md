@@ -1,316 +1,239 @@
-# Jarvis Agent — Complete Local Assistant
+# Jarvis — local-first autonomous Mac assistant
 
-A local-first autonomous agent for macOS (Apple Silicon), built in five
-layers: text reasoning core, voice I/O, computer/browser control, long-term
-memory + background autonomy, and optional cloud fallback for hard
-reasoning. Everything runs on your Mac by default; nothing leaves the
-machine unless you explicitly configure cloud fallback or web search.
+This project is a local-first personal assistant for macOS. The agent runs
+against a local Ollama model by default and exposes tools for files, apps,
+browser automation, Apple apps, messaging, system controls, voice, memory,
+web search, and a small background daemon.
 
-## What's included
+The current implementation is a strong Python agent foundation, not a
+finished Siri replacement. High-impact interactive actions are gated by an
+explicit confirmation flow; unattended daemon mode uses a physically
+restricted read-only tool surface.
 
-| Phase | What it adds | Key files |
-|---|---|---|
-| 1 | Text ReAct agent on a local Ollama model | `agent/graph.py`, `agent/llm.py`, `agent/main.py` |
-| 2 | Wake word + speech-to-text + text-to-speech | `agent/voice/` |
-| 3 | macOS app/UI control + browser control | `agent/computer/` |
-| 4 | Semantic long-term memory + background autonomy | `agent/memory.py`, `agent/daemon.py` |
-| 5 | Optional escalation to a cloud model (Claude API) | `agent/llm.py` (`get_cloud_llm`), `ask_cloud_model` tool |
-| — | Example MCP server (tool-sharing across clients) | `agent/mcp_servers/` |
+## What is implemented
 
-## Prerequisites
+- Local LangGraph tool-calling loop with self-correction.
+- Persistent session history and long-term memory notes/facts.
+- Finder/Spotlight file search, read/write/move/copy/rename/trash/archive.
+- PDF, DOCX, PPTX and spreadsheet extraction/search.
+- Mail, Calendar, Reminders, Notes and Contacts automation via AppleScript.
+- WhatsApp and iMessage messaging plus WhatsApp call automation.
+- Safari/Chrome active-tab context and a separate Playwright controlled browser.
+- Browser tabs, navigation, scrolling, selectors, links and safe downloads.
+- Screen capture + Apple Vision OCR from plain Python.
+- macOS battery, CPU, memory, disk, network, volume, brightness and power controls.
+- Background APScheduler/watchdog daemon with read-only isolation.
+- LaunchAgent install/uninstall/status commands for login startup.
 
-- macOS with Apple Silicon (M-series)
-- Python 3.11+
-- [Ollama](https://ollama.ai) installed and running (`brew install ollama`)
-- A pulled local model:
-  ```bash
-  ollama pull qwen2.5:7b      # good fit for 16GB RAM; use :14b (24-32GB) or :32b (48GB+) if you have more
-  ```
+## Security model
 
-## Setup
+### Shell command policy
+
+`run_shell_command` is classified before any confirmation dialog:
+
+- **Blocked**: root/system destruction, disk formatting, fork bombs, `sudo`,
+  credential/keychain access, destructive git operations, and other known
+  high-risk patterns.
+- **Safe**: a narrow set of read-only commands, plus strictly read-only git
+  forms such as `status`, `log`, `diff`, `show`, display-only `branch`, and
+  display-only `remote` operations.
+- **Review**: everything else requires explicit user confirmation.
+- Shell pipes, redirects, chaining and substitutions are never pre-approved.
+- Safe commands run without a shell; reviewed commands use explicit `/bin/zsh`
+  after confirmation and a minimal sanitized environment.
+
+This is policy hardening, not a kernel-level sandbox. A determined local
+attacker could still route around pattern-based rules, so destructive actions
+remain confirmation-gated rather than treated as impossible.
+
+### Generic filesystem path policy
+
+`agent/security/path_policy.py` prevents generic file tools from reading or
+writing credential stores and sensitive macOS locations such as `.env` files,
+SSH/AWS/Kubernetes credentials, Keychains, and system directories. Spotlight
+results are filtered so protected paths are not returned through generic search.
+
+### Prompt-injection boundary
+
+Retrieved content is wrapped as `[UNTRUSTED EXTERNAL CONTENT]` and explicitly
+marked as data rather than instructions. This covers files, documents, email,
+notes, browser text, clipboard/context, screen OCR, application UI text, and
+shell output. Common injection-like phrasing is logged without storing the
+payload itself, and content is capped before it reaches the model.
+
+### Cloud privacy boundary
+
+Cloud escalation is opt-in. The cloud graph receives only the current user
+request and a very small read-only tool surface; it does not receive the local
+tool transcript, browser contents, email contents, clipboard, or memory by
+default. Explicit `ask_cloud_model` calls are confirmation-gated.
+
+### Unattended daemon isolation
+
+Daemon mode uses `UNATTENDED_TOOLS`, not `ALL_TOOLS`. The daemon tool surface
+contains read-only file/document/memory/task/time operations only, and automatic
+cloud escalation is disabled. This is physical tool-surface isolation rather
+than a prompt-only instruction.
+
+## Screen OCR
+
+`read_screen_text`, `find_text_on_screen`, and `get_screen_context` use macOS's
+`screencapture` command and Apple's Vision framework through
+`pyobjc-framework-Vision`. No Swift/Xcode app is required. Grant Screen
+Recording permission to the terminal or IDE running Jarvis.
+
+Temporary screenshots are unique per request and removed after OCR completes.
+Do not use screen OCR while sensitive information is visible unless you intend
+for the model to process it.
+
+## Login at startup
+
+Install the background daemon as a macOS LaunchAgent:
 
 ```bash
-cd jarvis-agent
+python -m agent.system.launch_agent install
+python -m agent.system.launch_agent status
+python -m agent.system.launch_agent uninstall
+```
+
+The generated plist uses `RunAtLoad` and `KeepAlive`, and logs to
+`~/.jarvis_agent/logs/`.
+
+## Browser control
+
+The Playwright browser uses a persistent profile at
+`~/.jarvis_agent/browser_profile/` so site logins survive restarts. Browser
+downloads are stored under `~/.jarvis_agent/downloads/`; filenames are reduced
+to a basename and existing downloads are not silently overwritten.
+
+For "this" page/reel/file, the Context Engine checks the user's active
+Safari/Chrome tab and clipboard first. Instagram-native reel sharing still
+uses the controlled Playwright browser because the Instagram Share dialog is
+automated there. WhatsApp/no-platform sharing can use the real Safari/Chrome
+active URL.
+
+## Email write-side
+
+Mail tools now cover drafting and inbox management in addition to reading:
+`draft_email`, `reply_email`, `forward_email`, `mark_email_read`,
+`mark_email_unread`, and `archive_email`. Sending/replying/forwarding/archive
+operations remain confirmation-gated; draft creation does not transmit mail.
+
+## Remaining work
+
+The bigger architectural pieces are intentionally separate from this pass:
+
+- Native Swift/SwiftUI shell for a menu bar app, global hotkey, native settings,
+  and App Intents/Siri.
+- Configurable multi-tier action policy (read-only through destructive/admin)
+  instead of the current per-tool confirmation set.
+- Dynamic/semantic tool discovery rather than binding the complete interactive
+  surface on every turn.
+- General event bus/routine engine and full plan/preview/verify/undo workflow.
+- Advanced voice VAD, barge-in, noise/echo handling, and audio-device selection.
+- A machine-generated dependency lock (`uv.lock`) and CI once package resolution
+  and macOS-specific runtime testing are established.
+
+## Installation
+
+Create a virtual environment and install dependencies:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env         # then edit .env as needed
 ```
 
-Start Ollama in another terminal if it isn't already running:
+Start Ollama separately:
+
 ```bash
 ollama serve
 ```
 
-### If you want voice (Phase 2)
-
-Voice deps (`openwakeword`, `mlx-whisper`, `kokoro-onnx`, `sounddevice`) are
-already in `requirements.txt`. First run of `mlx-whisper` and `kokoro-onnx`
-will download their model weights automatically. Grant Microphone access
-when macOS prompts you.
-
-### If you want computer/browser control (Phase 3)
+For browser automation:
 
 ```bash
 playwright install chromium
 ```
-Also grant your terminal (or VS Code, if you run it from there) **Accessibility**
-and **Automation** permissions in System Settings > Privacy & Security —
-macOS will prompt the first time a script tries to control another app.
 
-### If you want cloud fallback (Phase 5)
-
-Add your key to `.env`:
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-Leave it blank to stay 100% local — the agent works fully without it and
-just won't have an escalation path for tasks the local model can't resolve.
-
-### If you want real web search
-
-Add a [Tavily](https://tavily.com) key to `.env`:
-```
-TAVILY_API_KEY=tvly-...
-```
-Without it, `web_search` returns a clear placeholder instead of failing.
+Grant Automation and Accessibility permissions as macOS prompts for them.
+For OCR, grant Screen Recording permission. For voice, grant Microphone access.
 
 ## Run
 
 ```bash
-# Interactive text mode
 python -m agent.main
-
-# Hands-free voice mode
 python -m agent.main --voice
-
-# Animated browser chat UI (open http://127.0.0.1:8765)
 python -m agent.main --web
-
-# Background autonomous daemon (scheduled + filesystem triggers)
 python -m agent.main --daemon
 ```
 
-Type `exit` / `quit` in text mode, or say "stop" in voice mode, to end a
-session. Ctrl+C stops the daemon or web server.
-
-### About the web UI
-
-`--web` starts a small local FastAPI server (nothing leaves your machine —
-it's bound to 127.0.0.1) and opens a chat page with an animated status orb:
-
-- **idle** — soft breathing pulse, waiting for input
-- **thinking** — faster spin while the agent reasons/calls tools
-- **speaking** — pulses while it talks back
-
-Spoken replies use your browser's built-in text-to-speech (Web Speech API)
-for zero extra setup. If you'd rather it use the same offline Kokoro voice
-as `--voice` mode, swap the `speak()` function in
-`agent/webui/static/index.html` to call a small `/speak` endpoint that
-runs `agent/voice/tts.py` server-side instead.
+The web UI binds to `127.0.0.1` only.
 
 ## Project layout
 
-```
+```text
 jarvis-agent/
 ├── agent/
-│   ├── config.py            # all settings (model, safety, voice, cloud)
-│   ├── graph.py              # LangGraph ReAct loop + cloud escalation
-│   ├── llm.py                # local (Ollama) + cloud (Claude) model access
-│   ├── main.py                # CLI entry point (text / voice / daemon)
-│   ├── memory.py              # flat facts + semantic notes (Chroma)
-│   ├── session.py              # persistent conversation history + summarization
-│   ├── safety.py               # confirmation gate for impactful actions
-│   ├── tools.py                # all tool definitions, registered in ALL_TOOLS
-│   ├── daemon.py                 # background/proactive autonomy loop
-│   ├── voice/
-│   │   ├── wake_word.py          # openWakeWord listener
-│   │   ├── stt.py                 # MLX-Whisper transcription
-│   │   ├── tts.py                  # Kokoro speech synthesis
-│   │   └── voice_loop.py           # wires wake -> STT -> agent -> TTS
+│   ├── config.py
+│   ├── graph.py
+│   ├── llm.py
+│   ├── main.py
+│   ├── memory.py
+│   ├── session.py
+│   ├── safety.py
+│   ├── tools.py
+│   ├── daemon.py
+│   ├── util.py
 │   ├── computer/
-│   │   ├── macos_control.py       # AppleScript/System Events app+UI control
-│   │   ├── whatsapp_control.py     # WhatsApp call automation (Accessibility API)
-│   │   ├── apple_apps.py           # Mail/Calendar/Reminders/Notes (AppleScript)
-│   │   ├── finder_control.py        # expanded file management (find/move/trash/compress)
-│   │   ├── media_control.py          # Music.app playback control
-│   │   ├── messaging.py               # unified send_message() over WhatsApp/iMessage
-│   │   └── browser_control.py       # Playwright browser control
+│   │   ├── apple_apps.py
+│   │   ├── browser_control.py
+│   │   ├── finder_control.py
+│   │   ├── macos_control.py
+│   │   ├── media_control.py
+│   │   ├── messaging.py
+│   │   └── whatsapp_control.py
 │   ├── context/
-│   │   ├── context.py               # get_current_context() — the top-level snapshot
-│   │   ├── browser_context.py        # reads YOUR real Safari/Chrome active tab
-│   │   └── clipboard.py               # pbcopy/pbpaste wrapper
-│   ├── security/
-│   │   ├── audit.py                   # structured action log
-│   │   └── secrets.py                  # Keychain-backed credential storage
-│   ├── system/
-│   │   └── system_control.py           # battery/volume/network/power actions
+│   │   ├── context.py
+│   │   ├── browser_context.py
+│   │   ├── clipboard.py
+│   │   └── screen.py
 │   ├── documents/
-│   │   └── extractor.py                # PDF/DOCX/PPTX/spreadsheet reading
-│   ├── tasks.py                          # simple persistent task manager
-│   ├── mcp_servers/
-│   │   └── filesystem_server.py  # example standalone MCP server
+│   │   └── extractor.py
+│   ├── security/
+│   │   ├── audit.py
+│   │   ├── content_policy.py
+│   │   ├── path_policy.py
+│   │   ├── secrets.py
+│   │   └── shell_policy.py
+│   ├── system/
+│   │   ├── system_control.py
+│   │   └── launch_agent.py
+│   ├── voice/
+│   │   └── voice_loop.py (+ STT/TTS/wake-word helpers)
 │   └── webui/
-│       ├── server.py              # FastAPI backend for the chat UI
-│       └── static/index.html       # animated orb + chat frontend
+│       ├── server.py
+│       └── static/index.html
 ├── tests/
+│   ├── conftest.py
 │   ├── test_tools.py
-│   └── test_safety.py
+│   ├── test_safety.py
+│   └── test_security_policy.py
 ├── requirements.txt
+├── pyproject.toml
+├── conftest.py
 ├── .env.example
 └── README.md
 ```
 
-## Safety model — read this before enabling voice/daemon mode
+## Testing
 
-Every tool that takes a real action (shell commands, file writes/deletes,
-app control, typing, browser navigation/clicks) is registered in
-`config.CONFIRM_REQUIRED_TOOLS` and routes through `safety.confirm_action()`
-before running. In text mode this is a blocking `y/N` prompt.
+The focused security and safety suites can be run without the full model stack:
 
-**In voice and daemon mode there's no one at a keyboard to answer that
-prompt.** Before relying on either:
-1. Decide which tools are safe to leave ungated for unattended use (read-only
-   ones — `list_files`, `read_file`, `get_frontmost_app`, `browser_get_text`,
-   `recall_fact`/`recall_notes` — are the safest starting set).
-2. For daemon mode especially, consider removing destructive tools from
-   `ALL_TOOLS` entirely rather than trusting a prompt that nothing is there
-   to answer — an unanswered `input()` call will just hang, not fail safe.
-3. Keep `DAEMON_LOG_PATH` (`~/.jarvis_agent/daemon.log`) and review it
-   regularly while you build trust in the system.
+```bash
+pytest -q tests/test_security_policy.py
+pytest -q tests/test_safety.py
+```
 
-## Autonomy upgrades in this version
-
-### Persistent memory across sessions
-
-Conversation history now survives restarts (`agent/session.py`), saved to
-`~/.jarvis_agent/memory/session_history.json` after every turn in both text
-mode and the web UI:
-
-- **Text mode** loads it automatically on startup and tells you how many
-  messages it resumed with.
-- **Web UI** loads it via a `/history` endpoint when the page opens, so
-  refreshing the browser doesn't lose the conversation.
-- Once history passes 40 messages, the oldest are summarized (by the local
-  model) into a long-term memory note and dropped from the active context,
-  so it doesn't grow forever or blow past the model's context window.
-- Voice mode doesn't use this yet — it's stateless per run. Wire it in the
-  same way (`session.load_history()` / `session.maybe_summarize()` /
-  `session.save_history()`) if you want that too.
-
-### Self-correction
-
-`MAX_ITERATIONS` was raised from 8 to 12, and the system prompt
-(`agent/graph.py`) now explicitly instructs the agent to read a tool's
-error, try an alternate approach (different tool, corrected argument, or a
-diagnostic like `inspect_app_ui`), and retry before reporting failure. This
-isn't a separate code path — it works because every tool already returns
-its errors as plain text the model can read and react to; the prompt just
-makes "try to recover" the expected behavior instead of "report and stop."
-
-### App automation (Mail, Calendar, Reminders, Notes)
-
-`agent/computer/apple_apps.py` — the most reliable automations in the
-project, because Apple's own apps expose real AppleScript dictionaries
-(no Accessibility-tree guesswork like WhatsApp needs):
-
-- `send_email(to, subject, body)`
-- `get_calendar_events_today()` — read-only, no confirmation needed
-- `add_calendar_event(title, start_date_str, end_date_str, calendar_name)`
-- `add_reminder(text, list_name, due_date_str)`
-- `add_note(title, body)`
-
-Date arguments must be in a format AppleScript's `date` coercion accepts,
-e.g. `"1/5/2026 3:00:00 PM"`. All write actions require confirmation like
-everything else destructive in this project.
-
-## Browser control — logins and reliable navigation
-
-The browser uses a **persistent profile** (`~/.jarvis_agent/browser_profile`),
-so once you log into a site (Instagram, etc.) in the window it opens, that
-login is remembered on later runs — you won't need to log in every time.
-
-For sites with unreliable navigation, use the named `browser_go_to` shortcuts
-such as `instagram_reels`, `instagram_home`, or `instagram_dms`.
-
-## Context awareness
-
-This version adds three capabilities that close a big chunk of the “what am I
-doing right now?” gap:
-
-- `get_current_context()` — combines frontmost app + active browser tab +
-  clipboard into one snapshot.
-- `get_active_browser_tab()` — reads the **user's real Safari or Chrome**
-  frontmost tab via AppleScript, separate from Jarvis's controlled Playwright
-  browser.
-- `get_clipboard()` / `set_clipboard()` — lets Jarvis read or replace the system
-  clipboard through `pbpaste` / `pbcopy`.
-
-The screenshot/OCR layer is still intentionally left as a future addition;
-ScreenCaptureKit/Vision would require a native helper and separate Screen
-Recording permission on macOS.
-
-## System controls
-
-New `agent/system/system_control.py` exposes battery, disk, network, volume,
-CPU, memory, uptime, timezone, brightness, and power actions. Power actions
-(lock/sleep/restart/shutdown) and volume/brightness changes are gated through
-the same confirmation policy.
-
-## Finder / file management
-
-`agent/computer/finder_control.py` adds safe-ish, purpose-specific tools over
-Finder and macOS file utilities: recursive file search, recent files,
-metadata, move/copy/rename, folder creation, trashing, revealing/opening,
-and archive compression/extraction. Destructive actions use the confirmation
-gate.
-
-## Documents
-
-`agent/documents/extractor.py` can read PDF, DOCX, PPTX, XLSX/XLSM/ODS-ish
-(spreadsheet via `openpyxl`) content and search within PDFs. Results are
-truncated so large documents don't explode the context window.
-
-## Tasks + audit log
-
-`agent/tasks.py` is a tiny persistent task store at `~/.jarvis_agent/tasks.json`
-with create/list/complete/delete. `agent/security/audit.py` records structured
-success/denial/failure information for tool actions, and `what_did_you_do_today`
-exposes a human-readable recent-actions summary to the agent.
-
-## Keychain-backed secrets
-
-`agent/security/secrets.py` uses macOS `security` CLI Keychain lookups when
-available, while keeping `.env` as the explicit development fallback. The
-code never stores the secret value in the audit log.
-
-## Cloud safety boundary
-
-The cloud fallback is now **off by default** (`JARVIS_CLOUD_AUTO_ESCALATE=false`)
-and the Claude model is bound only to `SAFE_CLOUD_TOOLS` — read-only/low-risk
-operations. It cannot run your shell, delete files, send messages, or invoke
-power actions. For sensitive tasks, prefer the fully local path. The default
-cloud model is `claude-sonnet-5`; set `JARVIS_CLOUD_FALLBACK_MODEL` in `.env` to
-change it.
-
-## Known gaps / next additions
-
-These are deliberate next steps rather than silently pretending they are done:
-
-- **Native screen capture + OCR** (ScreenCaptureKit + Vision helper).
-- **Global macOS hotkey** to invoke Jarvis without the terminal focused.
-- **Native menu-bar app / approval UI** instead of CLI `input()` confirmation.
-- **Event-driven automations** beyond the current morning schedule + file
-  watcher (battery low, email received, calendar soon, clipboard changed, etc.).
-- **Full Calendar/Reminder/Notes/Mail editing/search** beyond the current
-  useful read/create subset.
-- **Swift `SMAppService` / Login Item packaging** so Jarvis starts with macOS
-  rather than a terminal command.
-- **Streaming/cancellation in the web UI**.
-- **Model routing** (small fast local model vs bigger reasoning/vision model).
-- **Voice persistence + barge-in / VAD**.
-- **Prompt-injection hardening** for external web/document content.
-- **MCP v2 migration** when you deliberately upgrade the SDK.
-
-This repository is intended as a strong local-agent foundation rather than a
-finished Siri replacement. Build permissions and autonomy gradually.
+The broader `tests/test_tools.py` suite imports the LangChain tool layer and
+therefore requires the full project dependencies from `requirements.txt`.
