@@ -24,6 +24,7 @@ restricted read-only tool surface.
 - macOS battery, CPU, memory, disk, network, volume, brightness and power controls.
 - Background APScheduler/watchdog daemon with read-only isolation.
 - LaunchAgent install/uninstall/status commands for login startup.
+- Dynamic tool discovery that scopes the model to relevant tools on each request.
 
 ## Security model
 
@@ -112,6 +113,21 @@ uses the controlled Playwright browser because the Instagram Share dialog is
 automated there. WhatsApp/no-platform sharing can use the real Safari/Chrome
 active URL.
 
+## Dynamic tool discovery
+
+Jarvis does not need to expose all interactive tools to the model on every
+request. `agent/tool_router.py` uses deterministic category/keyword matching
+to select a focused subset, normally capped at about 25 tools, while keeping
+explicit cross-domain dependencies for requests such as "send this reel to
+Rahul on WhatsApp".
+
+When no category matches, Jarvis falls back to the full interactive registry
+rather than guessing. Set `JARVIS_DYNAMIC_TOOLS=false` to disable routing while
+debugging.
+
+The router operates on the combined legacy + extended registry and does not
+remove any tool from `ALL_TOOLS` or `EXTRA_TOOLS`.
+
 ## Email write-side
 
 Mail tools now cover drafting and inbox management in addition to reading:
@@ -127,12 +143,11 @@ The bigger architectural pieces are intentionally separate from this pass:
   and App Intents/Siri.
 - Configurable multi-tier action policy (read-only through destructive/admin)
   instead of the current per-tool confirmation set.
-- Dynamic/semantic tool discovery rather than binding the complete interactive
-  surface on every turn.
 - General event bus/routine engine and full plan/preview/verify/undo workflow.
+- Scoped file-operation undo before attempting any universal undo system.
 - Advanced voice VAD, barge-in, noise/echo handling, and audio-device selection.
-- A machine-generated dependency lock (`uv.lock`) and CI once package resolution
-  and macOS-specific runtime testing are established.
+- A machine-generated dependency lock (`uv.lock`) and broader macOS integration
+  testing once the runtime environment is available.
 
 ## Installation
 
@@ -183,6 +198,7 @@ jarvis-agent/
 │   ├── session.py
 │   ├── safety.py
 │   ├── tools.py
+│   ├── tool_router.py
 │   ├── daemon.py
 │   ├── util.py
 │   ├── computer/
@@ -215,25 +231,25 @@ jarvis-agent/
 │       ├── server.py
 │       └── static/index.html
 ├── tests/
-│   ├── conftest.py
 │   ├── test_tools.py
 │   ├── test_safety.py
-│   └── test_security_policy.py
+│   └── test_tool_router.py
+├── .github/workflows/ci.yml
 ├── requirements.txt
 ├── pyproject.toml
-├── conftest.py
 ├── .env.example
 └── README.md
 ```
 
 ## Testing
 
-The focused security and safety suites can be run without the full model stack:
+The CI workflow performs an AST syntax check and validates that every
+categorized router entry exists in the combined tool registry. A best-effort
+full pytest run executes on a macOS runner because parts of Jarvis target
+Apple-specific APIs and MLX.
+
+Run locally with:
 
 ```bash
-pytest -q tests/test_security_policy.py
-pytest -q tests/test_safety.py
+python -m pytest -q
 ```
-
-The broader `tests/test_tools.py` suite imports the LangChain tool layer and
-therefore requires the full project dependencies from `requirements.txt`.

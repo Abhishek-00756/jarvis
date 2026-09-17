@@ -39,6 +39,7 @@ CLOUD_FALLBACK_MODEL = os.environ.get("JARVIS_CLOUD_FALLBACK_MODEL", "claude-son
 CLOUD_FALLBACK_ENABLED = bool(ANTHROPIC_API_KEY)
 CLOUD_AUTO_ESCALATE = os.environ.get("JARVIS_CLOUD_AUTO_ESCALATE", "false").lower() == "true"
 TAVILY_API_KEY = _get_secret_with_keychain_fallback("TAVILY_API_KEY")
+DYNAMIC_TOOL_SELECTION = os.environ.get("JARVIS_DYNAMIC_TOOLS", "true").lower() == "true"
 WAKE_WORD = os.environ.get("JARVIS_WAKE_WORD", "hey_jarvis")
 SAMPLE_RATE = 16000
 STT_MODEL = "mlx-community/whisper-small-mlx"

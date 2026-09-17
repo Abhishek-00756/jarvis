@@ -23,6 +23,7 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
     iterations: int
     escalated: bool
+    selected_tool_names: list[str]
 
 
 SYSTEM_PROMPT = (
@@ -148,8 +149,15 @@ def _execute_one(tool, name: str, args: dict):
     return text
 
 
-def execute_tools(state: AgentState, selected_tools: list) -> dict:
-    tools = _tool_map(selected_tools)
+def execute_tools(state: AgentState, available_tools: list) -> dict:
+    """Execute only the tools that were exposed for the current turn."""
+    selected_names = set(state.get("selected_tool_names", []))
+    if selected_names:
+        toolset = [t for t in available_tools if t.name in selected_names]
+    else:
+        toolset = available_tools
+    tools = _tool_map(toolset)
+
     messages = []
     last = state["messages"][-1]
     for call in getattr(last, "tool_calls", []) or []:
@@ -157,7 +165,7 @@ def execute_tools(state: AgentState, selected_tools: list) -> dict:
         args = call.get("args", {}) or {}
         tool = tools.get(name)
         if tool is None:
-            content = f"Unknown tool: {name}"
+            content = f"Tool '{name}' was not exposed for this request."
         else:
             try:
                 content = _execute_one(tool, name, args)
@@ -170,15 +178,23 @@ def execute_tools(state: AgentState, selected_tools: list) -> dict:
 def agent_node(state: AgentState, *, toolset: list, cloud_toolset: list) -> dict:
     use_cloud = bool(state.get("escalated", False) and config.CLOUD_FALLBACK_ENABLED)
     if use_cloud:
-        llm = get_cloud_llm(bind_tools=cloud_toolset)
+        current_tools = list(cloud_toolset)
+        llm = get_cloud_llm(bind_tools=current_tools)
         messages = _cloud_messages(state["messages"])
     else:
-        llm = get_llm(bind_tools=toolset)
+        from agent.tool_router import select_relevant_tools
+        current_tools = select_relevant_tools(_latest_user_message(state["messages"]), all_tools=toolset)
+        llm = get_llm(bind_tools=current_tools)
         messages = state["messages"]
         if not messages or getattr(messages[0], "type", None) != "system":
             messages = [{"role": "system", "content": SYSTEM_PROMPT}] + list(messages)
+
     response = llm.invoke(messages)
-    return {"messages": [response], "iterations": state.get("iterations", 0) + 1}
+    return {
+        "messages": [response],
+        "iterations": state.get("iterations", 0) + 1,
+        "selected_tool_names": [tool.name for tool in current_tools],
+    }
 
 
 def should_continue(state: AgentState, allow_cloud_escalation: bool = True) -> str:
@@ -203,11 +219,18 @@ def build_graph(toolset=None, cloud_toolset=None, allow_cloud_escalation: bool =
     selected_cloud_tools = list(SAFE_CLOUD_TOOLS if cloud_toolset is None else cloud_toolset)
 
     graph = StateGraph(AgentState)
-    graph.add_node("agent", lambda state: agent_node(state, toolset=selected_tools, cloud_toolset=selected_cloud_tools))
+    graph.add_node(
+        "agent",
+        lambda state: agent_node(state, toolset=selected_tools, cloud_toolset=selected_cloud_tools),
+    )
     graph.add_node("tools", lambda state: execute_tools(state, selected_tools))
     graph.add_node("escalate", escalate_node)
     graph.set_entry_point("agent")
-    graph.add_conditional_edges("agent", lambda state: should_continue(state, allow_cloud_escalation), {"tools": "tools", "escalate": "escalate", "end": END})
+    graph.add_conditional_edges(
+        "agent",
+        lambda state: should_continue(state, allow_cloud_escalation),
+        {"tools": "tools", "escalate": "escalate", "end": END},
+    )
     graph.add_edge("tools", "agent")
     graph.add_edge("escalate", "agent")
     return graph.compile()
